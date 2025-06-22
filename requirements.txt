@@ -1,6 +1,6 @@
 Flask==2.3.2
 requests==2.31.0
-pandas==2.2.2  # Updated to a more recent stable version
-numpy==1.26.4  # Updated to a more recent stable version, compatible with pandas 2.2.2
+pandas==2.2.2; sys_platform == "linux"  # Target Linux platforms for pre-built wheels
+numpy==1.26.4; sys_platform == "linux"  # Target Linux platforms for pre-built wheels
 Flask-Cors==3.0.10
 gunicorn==20.1.0
