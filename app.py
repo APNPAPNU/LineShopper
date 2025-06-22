@@ -721,6 +721,84 @@ def generate_formatted_report_internal(df, output_path):
     print(f"Report saved to {filepath}")
     return filepath
 
+# --- Data Formatting for Frontend ---
+def format_for_frontend(df_raw_filtered):
+    """
+    Formats the filtered raw data DataFrame into a structured JSON suitable for the frontend.
+    """
+    games_output = []
+
+    # Ensure numeric columns are actually numeric for safety
+    df_raw_filtered = df_raw_filtered.copy()
+    numeric_cols_to_check = ['odds', 'value', 'tickets_value', 'tickets_percent', 'money_value', 'money_percent']
+    for col in numeric_cols_to_check:
+        if col in df_raw_filtered.columns:
+            df_raw_filtered[col] = pd.to_numeric(df_raw_filtered[col], errors='coerce')
+
+    # Group by event (game)
+    for event_id, event_data_df in df_raw_filtered.groupby('event_id'):
+        # Extract common game info (home/away team, logos)
+        # Use .iloc[0] because these should be consistent across all rows for the same event_id
+        home_team = event_data_df['home_team'].iloc[0]
+        away_team = event_data_df['away_team'].iloc[0]
+        home_logo = event_data_df['home_logo'].iloc[0] if 'home_logo' in event_data_df.columns else ""
+        away_logo = event_data_df['away_logo'].iloc[0] if 'away_logo' in event_data_df.columns else ""
+
+        game_markets = {}
+
+        # Group by market type within this event
+        for market_type_raw, market_data_df in event_data_df.groupby('market_type'):
+            market_type = market_type_raw.lower() # Standardize to lowercase
+
+            # Rename 'total' to 'totals' for consistency with frontend expectation
+            if market_type == 'total':
+                market_type = 'totals'
+
+            market_sides = []
+
+            # Group by side within this market
+            for side_raw, side_data_df in market_data_df.groupby('side'):
+                side = side_raw.lower() # Standardize to lowercase
+
+                # Find the consensus odds for this side to get percentages and value
+                # Using 'Consensus' book for betting percentages and main line values
+                consensus_row = side_data_df[side_data_df['book_name'].str.contains('Consensus', case=False, na=False)]
+                if not consensus_row.empty:
+                    consensus_row = consensus_row.iloc[0]
+                elif not side_data_df.empty: # Fallback to any row if no consensus found
+                    consensus_row = side_data_df.iloc[0]
+                else:
+                    consensus_row = None # No data for this side
+
+                if consensus_row is not None:
+                    # Ensure these are numeric, handling NaN gracefully
+                    current_odds = consensus_row['odds'] if pd.notna(consensus_row['odds']) else None
+                    tickets_percent = consensus_row['tickets_percent'] if pd.notna(consensus_row['tickets_percent']) else 0
+                    money_percent = consensus_row['money_percent'] if pd.notna(consensus_row['money_percent']) else 0
+                    line_value = consensus_row['value'] if pd.notna(consensus_row['value']) else None
+
+                    market_sides.append({
+                        "side": side,
+                        "odds": current_odds,
+                        "value": line_value, # For spread/total lines
+                        "tickets_percent": tickets_percent,
+                        "money_percent": money_percent,
+                    })
+
+            if market_sides:
+                game_markets[market_type] = {"sides": market_sides}
+
+        if game_markets:
+            games_output.append({
+                "event_id": int(event_id), # Ensure event_id is an integer for JSON
+                "home_team": home_team,
+                "away_team": away_team,
+                "home_logo": home_logo,
+                "away_logo": away_logo,
+                "markets": game_markets
+            })
+    return games_output
+
 # --- Flask Routes ---
 
 @app.route('/')
@@ -728,11 +806,10 @@ def index():
     """Serve the main HTML page."""
     return send_file('static/index.html')
 
-@app.route('/fetch-and-process', methods=['GET'])
-def fetch_and_process_data():
+@app.route('/api/fetch-data', methods=['GET'])
+def api_fetch_data():
     """
-    Endpoint to trigger fetching and processing of MLB betting data.
-    Returns paths to generated files.
+    Endpoint to fetch, process, and return MLB betting data structured for the frontend.
     """
     try:
         # Define the allowed book IDs
@@ -744,9 +821,11 @@ def fetch_and_process_data():
         # Step 1: Fetch raw data
         input_file_path, formatted_date = fetch_mlb_data_internal(date_str)
         
-        # Step 2: Process with book ID filtering and calculate weighted averages
+        # Step 2: Process with book ID filtering. We only need the filtered_raw_filepath for frontend data.
         filtered_raw_file_name = f"filtered_raw_data_{formatted_date}.csv"
-        weighted_averages_file_name = f"weighted_averages_results_{formatted_date}.csv" # Add date to ensure uniqueness
+        # The weighted_averages_file_name is not strictly needed for this frontend display,
+        # but the process_odds_file_internal function produces it, so we keep the call.
+        weighted_averages_file_name = f"weighted_averages_results_{formatted_date}.csv"
         
         weighted_avg_filepath, filtered_raw_filepath = process_odds_file_internal(
             input_file_path, 
@@ -755,37 +834,34 @@ def fetch_and_process_data():
             allowed_book_ids=ALLOWED_BOOK_IDS
         )
 
-        # Step 3: Generate the formatted report
-        report_file_name = f"line_movement_report_mlb_{formatted_date}.txt"
-        df_book_odds = load_and_clean_data(filtered_raw_filepath) # Load filtered data for report generation
+        # Step 3: Load the filtered raw data and format for frontend
+        df_book_odds = load_and_clean_data(filtered_raw_filepath)
         
-        if df_book_odds is None:
-            return jsonify({"status": "error", "message": "Failed to load data for report generation."}), 500
+        if df_book_odds is None or df_book_odds.empty:
+            return jsonify({"success": False, "error": "No data found or loaded for processing."}), 500
 
-        report_filepath = generate_formatted_report_internal(df_book_odds, report_file_name)
+        # Format the data into the structure expected by the frontend
+        formatted_games_data = format_for_frontend(df_book_odds)
 
         return jsonify({
-            "status": "success",
-            "message": "Data fetched, processed, and reports generated.",
-            "original_data_path": os.path.basename(input_file_path),
-            "filtered_raw_data_path": os.path.basename(filtered_raw_filepath) if filtered_raw_filepath else None,
-            "weighted_averages_path": os.path.basename(weighted_avg_filepath) if weighted_avg_filepath else None,
-            "report_path": os.path.basename(report_filepath)
+            "success": True,
+            "data": formatted_games_data,
+            "timestamp": datetime.now().isoformat()
         })
 
     except requests.exceptions.RequestException as req_err:
         print(f"Network or API error: {req_err}")
-        return jsonify({"status": "error", "message": f"Failed to fetch data from API: {req_err}"}), 500
+        return jsonify({"success": False, "error": f"Failed to fetch data from API: {req_err}"}), 500
     except FileNotFoundError as fnf_err:
         print(f"File not found error: {fnf_err}")
-        return jsonify({"status": "error", "message": f"Required file not found: {fnf_err}"}), 500
+        return jsonify({"success": False, "error": f"Required file not found: {fnf_err}"}), 500
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
-        return jsonify({"status": "error", "message": f"An internal server error occurred: {e}"}), 500
+        return jsonify({"success": False, "error": f"An internal server error occurred: {e}"}), 500
 
 @app.route('/reports/<filename>')
 def serve_report(filename):
-    """Endpoint to serve generated report files."""
+    """Endpoint to serve generated report files (e.g., CSVs or text reports)."""
     filepath = os.path.join(OUTPUT_DIR, filename)
     if os.path.exists(filepath):
         # Determine mimetype based on file extension
