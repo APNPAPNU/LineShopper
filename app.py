@@ -329,6 +329,13 @@ def process_odds_file_internal(input_path, output_path, filtered_output_path=Non
 def american_to_implied_probability(odds):
     """Converts American odds to implied win probability."""
     if odds is None: return 0.0
+    # Ensure odds is a number before comparison
+    if isinstance(odds, str):
+        try:
+            odds = float(odds)
+        except ValueError:
+            return 0.0 # Cannot convert
+    
     if odds > 0:
         return 100 / (odds + 100)
     elif odds < 0:
@@ -346,10 +353,8 @@ def calculate_expected_value(fair_odds_american, sportsbook_odds_american):
 
     try:
         # Convert fair_odds_american to numeric if it's a string from the CSV
-        if isinstance(fair_odds_american, str):
-            fair_odds_american = float(fair_odds_american)
-        if isinstance(sportsbook_odds_american, str):
-            sportsbook_odds_american = float(sportsbook_odds_american)
+        fair_odds_american = float(fair_odds_american)
+        sportsbook_odds_american = float(sportsbook_odds_american)
 
         fair_prob = american_to_implied_probability(fair_odds_american)
         sportsbook_payout_decimal = american_to_decimal(sportsbook_odds_american)
@@ -459,7 +464,22 @@ def detect_reverse_line_movement(open_odds, consensus_odds, tickets_percent, sid
     # Calculate favorability for the fade side
     fade_favorability = get_favorability(open_odds, consensus_odds)
 
-    if fade_favorability == "MORE favorable" and tickets_percent > 50: # tickets_percent is for the PUBLIC side
+    # The user's example shows RLM when fade side became *less* favorable despite public betting.
+    # Let's adjust the logic to match that example.
+    # RLM is typically when the line moves *against* the public money.
+    # So, if public side has high tickets, but the line on the public side becomes LESS favorable,
+    # OR the line on the fade side becomes MORE favorable.
+
+    # Option 1: Public side's odds get worse (less favorable) despite high public tickets
+    public_favorability = get_favorability(open_odds, consensus_odds)
+    if public_favorability == "LESS favorable" and tickets_percent > 50:
+        return True, 'public_side_became_less_favorable_despite_public_betting', tickets_percent
+
+    # Option 2: Fade side's odds get better (more favorable) despite low public tickets (or high public tickets on opposing side)
+    # This implies a move towards the "sharp" money on the fade side.
+    # The 'tickets_percent' being passed here is for the *public* side.
+    # So if fade_favorability is "MORE favorable" and public_tickets is high, that's RLM.
+    if fade_favorability == "MORE favorable" and tickets_percent > 50:
         return True, 'fade_side_became_more_favorable_despite_public_betting', tickets_percent
     
     return False, None, 0.0
@@ -526,7 +546,11 @@ def determine_public_and_fade_sides(side_data, sides):
     side1_tickets = side_data[side1]['consensus']['tickets_percent'].iloc[0] if not side_data[side1]['consensus'].empty else 0
     side2_tickets = side_data[side2]['consensus']['tickets_percent'].iloc[0] if not side_data[side2]['consensus'].empty else 0
 
-    if side1_tickets > side2_tickets:
+    # Ensure tickets are numbers
+    side1_tickets = float(side1_tickets)
+    side2_tickets = float(side2_tickets)
+
+    if side1_tickets >= side2_tickets: # If equal, default to side1 as public
         return side1, side2
     else:
         return side2, side1
@@ -554,6 +578,7 @@ def create_side_labels(market_type, side, side_teams, side_data, total_value=Non
 def add_best_line_with_ev(report_lines, row, side_key, side_teams, fair_odds_val, market_type):
     """Add best sportsbook line with EV calculation to report."""
     if row is None:
+        report_lines.append(f"    No best line found for this side.")
         return
 
     book = row['book_name']
@@ -588,13 +613,29 @@ def process_market(event_data, market_type, home_team, away_team):
     if side_data is None:
         return []
 
-    public_side, fade_side = determine_public_and_fade_sides(side_data, sides)
+    # Get betting percentages for both sides before determining public/fade
+    side1, side2 = sides
+    side1_tickets = side_data[side1]['consensus']['tickets_percent'].iloc[0] if not side_data[side1]['consensus'].empty else 0
+    side2_tickets = side_data[side2]['consensus']['tickets_percent'].iloc[0] if not side_data[side2]['consensus'].empty else 0
 
-    # Get betting percentages
-    public_tickets = side_data[public_side]['consensus']['tickets_percent'].iloc[0]
-    public_money = side_data[public_side]['consensus']['money_percent'].iloc[0]
-    fade_tickets = side_data[fade_side]['consensus']['tickets_percent'].iloc[0]
-    fade_money = side_data[fade_side]['consensus']['money_percent'].iloc[0]
+    # Ensure tickets are numbers
+    side1_tickets = float(side1_tickets)
+    side2_tickets = float(side2_tickets)
+
+    # Determine public and fade side based on tickets_percent
+    if side1_tickets >= side2_tickets:
+        public_side = side1
+        fade_side = side2
+    else:
+        public_side = side2
+        fade_side = side1
+
+
+    # Get betting percentages for public/fade
+    public_tickets = side_data[public_side]['consensus']['tickets_percent'].iloc[0] if not side_data[public_side]['consensus'].empty else 0
+    public_money = side_data[public_side]['consensus']['money_percent'].iloc[0] if not side_data[public_side]['consensus'].empty else 0
+    fade_tickets = side_data[fade_side]['consensus']['tickets_percent'].iloc[0] if not side_data[fade_side]['consensus'].empty else 0
+    fade_money = side_data[fade_side]['consensus']['money_percent'].iloc[0] if not side_data[fade_side]['consensus'].empty else 0
 
     # Get total value for totals market (should be the line value, e.g., 8.5 for over/under)
     total_value = None
@@ -609,10 +650,10 @@ def process_market(event_data, market_type, home_team, away_team):
     fade_label = create_side_labels(market_type, fade_side, side_teams, side_data, total_value)
 
     # Get odds and calculate movements
-    public_open_odds = side_data[public_side]['open']['odds'].iloc[0]
-    public_consensus_odds = side_data[public_side]['consensus']['odds'].iloc[0]
-    fade_open_odds = side_data[fade_side]['open']['odds'].iloc[0]
-    fade_consensus_odds = side_data[fade_side]['consensus']['odds'].iloc[0]
+    public_open_odds = side_data[public_side]['open']['odds'].iloc[0] if not side_data[public_side]['open'].empty else None
+    public_consensus_odds = side_data[public_side]['consensus']['odds'].iloc[0] if not side_data[public_side]['consensus'].empty else None
+    fade_open_odds = side_data[fade_side]['open']['odds'].iloc[0] if not side_data[fade_side]['open'].empty else None
+    fade_consensus_odds = side_data[fade_side]['consensus']['odds'].iloc[0] if not side_data[fade_side]['consensus'].empty else None
 
     # Ensure odds are numeric before calculations
     public_open_odds = pd.to_numeric(public_open_odds, errors='coerce')
@@ -621,17 +662,26 @@ def process_market(event_data, market_type, home_team, away_team):
     fade_consensus_odds = pd.to_numeric(fade_consensus_odds, errors='coerce')
 
 
-    public_move = public_consensus_odds - public_open_odds if not pd.isna(public_consensus_odds) and not pd.isna(public_open_odds) else None
-    fade_move = fade_consensus_odds - fade_open_odds if not pd.isna(fade_consensus_odds) and not pd.isna(fade_open_odds) else None
+    public_move = public_consensus_odds - public_open_odds if pd.notna(public_consensus_odds) and pd.notna(public_open_odds) else None
+    fade_move = fade_consensus_odds - fade_open_odds if pd.notna(fade_consensus_odds) and pd.notna(fade_open_odds) else None
 
 
     public_favor = get_favorability(public_open_odds, public_consensus_odds)
     fade_favor = get_favorability(fade_open_odds, fade_consensus_odds)
 
-    # Check for reverse line movement
+    # Check for reverse line movement. Pass public_tickets as the `tickets_percent` argument.
     rlm_detected, rlm_type, strength = detect_reverse_line_movement(
-        fade_open_odds, fade_consensus_odds, public_tickets, 'fade'
+        public_open_odds, public_consensus_odds, public_tickets, 'public' # Check RLM for public side's movement
     )
+    # Also check if fade side got more favorable against public tickets
+    if not rlm_detected: # Only check this if not already detected
+        rlm_detected_fade, rlm_type_fade, strength_fade = detect_reverse_line_movement(
+            fade_open_odds, fade_consensus_odds, public_tickets, 'fade' # Check RLM for fade side's movement
+        )
+        if rlm_detected_fade:
+            rlm_detected = True
+            rlm_type = rlm_type_fade
+            strength = strength_fade
 
     # Get best sportsbook lines (most favorable to bettor)
     best_public_row = None
@@ -643,13 +693,14 @@ def process_market(event_data, market_type, home_team, away_team):
     if not side_data[fade_side]['sportsbook'].empty:
         best_fade_row = get_best_odds_row(side_data[fade_side]['sportsbook'])
 
+
     # Build report
     report_lines = []
     report_lines.append(f"PUBLIC SIDE: {public_label} ({public_tickets:.0f}% tickets, {public_money:.0f}% money)")
     report_lines.append(f"FADE SIDE: {fade_label} ({fade_tickets:.0f}% tickets, {fade_money:.0f}% money)")
     report_lines.append("Line Movements:")
-    report_lines.append(f"    {public_label}: {format_odds(public_move) if public_move is not None else 'N/A'} ({public_favor})")
-    report_lines.append(f"    {fade_label}: {format_odds(fade_move) if fade_move is not None else 'N/A'} ({fade_favor})")
+    report_lines.append(f"    {public_label}: {format_odds(public_consensus_odds - public_open_odds) if public_move is not None else 'N/A'} ({public_favor})")
+    report_lines.append(f"    {fade_label}: {format_odds(fade_consensus_odds - fade_open_odds) if fade_move is not None else 'N/A'} ({fade_favor})")
 
     if rlm_detected:
         report_lines.append("🚨 REVERSE LINE MOVEMENT DETECTED!")
@@ -657,17 +708,17 @@ def process_market(event_data, market_type, home_team, away_team):
         report_lines.append(f"    Strength: {strength:.1f}%")
 
     report_lines.append("Detailed Analysis:")
-    for side_key in [fade_side, public_side]:
-        current_open_odds = side_data[side_key]['open']['odds'].iloc[0]
-        current_consensus_odds = side_data[side_key]['consensus']['odds'].iloc[0]
+    for side_key in [fade_side, public_side]: # Display fade side first as it's often the focus for RLM
+        current_open_odds = side_data[side_key]['open']['odds'].iloc[0] if not side_data[side_key]['open'].empty else None
+        current_consensus_odds = side_data[side_key]['consensus']['odds'].iloc[0] if not side_data[side_key]['consensus'].empty else None
         
         current_open_odds = pd.to_numeric(current_open_odds, errors='coerce')
         current_consensus_odds = pd.to_numeric(current_consensus_odds, errors='coerce')
 
-        current_move = current_consensus_odds - current_open_odds if not pd.isna(current_consensus_odds) and not pd.isna(current_open_odds) else None
+        current_move = current_consensus_odds - current_open_odds if pd.notna(current_consensus_odds) and pd.notna(current_open_odds) else None
         current_label = create_side_labels(market_type, side_key, side_teams, side_data, total_value)
 
-        report_lines.append(f"    {current_label}: {format_odds(current_open_odds)} → {format_odds(current_consensus_odds)} (Move: {format_odds(current_move) if current_move is not None else 'N/A'})")
+        report_lines.append(f"    {current_label}: {format_odds(current_open_odds) if pd.notna(current_open_odds) else 'N/A'} → {format_odds(current_consensus_odds) if pd.notna(current_consensus_odds) else 'N/A'} (Move: {format_odds(current_move) if current_move is not None else 'N/A'})")
 
     report_lines.append("Best Sportsbook Lines:")
     add_best_line_with_ev(report_lines, best_fade_row, fade_side, side_teams,
@@ -679,7 +730,7 @@ def process_market(event_data, market_type, home_team, away_team):
 
 def ensure_numeric_columns(df):
     """Ensure relevant columns are numeric for calculations."""
-    numeric_columns = ['odds', 'value', 'tickets_percent', 'money_percent', 'event_id']
+    numeric_columns = ['odds', 'value', 'tickets_percent', 'money_percent'] # Removed 'event_id' as it might be string IDs
     for col in numeric_columns:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -691,7 +742,9 @@ def generate_formatted_report_internal(df, output_path):
 
     report_lines = []
     # Filter out rows where event_id could not be converted to numeric (NaN)
-    df_filtered = df[pd.to_numeric(df['event_id'], errors='coerce').notna()]
+    # Convert event_id to string for consistent grouping, then sort for consistent order
+    df['event_id'] = df['event_id'].astype(str)
+    df_filtered = df[df['event_id'].notna()]
     
     # Sort by event_id for consistent report order
     df_filtered = df_filtered.sort_values(by='event_id')
@@ -700,7 +753,7 @@ def generate_formatted_report_internal(df, output_path):
         home_team = event_data['home_team'].iloc[0]
         away_team = event_data['away_team'].iloc[0]
 
-        report_lines.append(f"*** {home_team} vs {away_team} (Event ID: {int(event_id)}) ***")
+        report_lines.append(f"*** {home_team} vs {away_team} (Event ID: {event_id}) ***")
         report_lines.append("-" * 60)
 
         for market_type in ['spread', 'moneyline', 'totals']:
@@ -737,7 +790,10 @@ def format_for_frontend(df_raw_filtered):
             # Convert to float and then to native Python float/int where appropriate
             df_raw_filtered[col] = df_raw_filtered[col].apply(lambda x: float(x) if pd.notna(x) else None)
             # For integer-like columns, convert to int if no decimals and not None
-            if col in ['event_id', 'book_id']: # Add other integer columns if needed
+            # Do not convert event_id to int here, keep as string or float depending on original, 
+            # as it might not always be purely integer based on API.
+            # Convert to int only for display where sure.
+            if col in ['book_id']: # Add other integer columns if needed
                  df_raw_filtered[col] = df_raw_filtered[col].apply(lambda x: int(x) if pd.notna(x) and x == int(x) else x)
 
 
@@ -796,7 +852,7 @@ def format_for_frontend(df_raw_filtered):
 
         if game_markets:
             games_output.append({
-                "event_id": int(event_id), # Ensure event_id is an integer for JSON
+                "event_id": str(event_id), # Keep event_id as string for JSON
                 "home_team": home_team,
                 "away_team": away_team,
                 "home_logo": home_logo,
@@ -816,6 +872,7 @@ def index():
 def api_fetch_data():
     """
     Endpoint to fetch, process, and return MLB betting data structured for the frontend.
+    Also generates a detailed text report.
     """
     try:
         # Define the allowed book IDs
@@ -827,7 +884,7 @@ def api_fetch_data():
         # Step 1: Fetch raw data
         input_file_path, formatted_date = fetch_mlb_data_internal(date_str)
         
-        # Step 2: Process with book ID filtering. We only need the filtered_raw_filepath for frontend data.
+        # Step 2: Process with book ID filtering.
         filtered_raw_file_name = f"filtered_raw_data_{formatted_date}.csv"
         # The weighted_averages_file_name is not strictly needed for this frontend display,
         # but the process_odds_file_internal function produces it, so we keep the call.
@@ -846,12 +903,18 @@ def api_fetch_data():
         if df_book_odds is None or df_book_odds.empty:
             return jsonify({"success": False, "error": "No data found or loaded for processing."}), 500
 
+        # Step 4: Generate the detailed text report
+        report_filename = f"mlb_line_movement_report_{formatted_date}.txt"
+        generated_report_path = generate_formatted_report_internal(df_book_odds, report_filename)
+
+
         # Format the data into the structure expected by the frontend
         formatted_games_data = format_for_frontend(df_book_odds)
 
         return jsonify({
             "success": True,
             "data": formatted_games_data,
+            "report_url": f"/reports/{report_filename}", # Include the URL to the report
             "timestamp": datetime.now().isoformat()
         })
 
