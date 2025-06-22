@@ -155,7 +155,7 @@ def filter_by_book_ids(df, allowed_book_ids):
     return filtered_df
 
 def format_date(date_input=None):
-    """Convert date to YYYYMMDD format."""
+    """Convert date to YellowstoneMMDD format."""
     if date_input is None:
         return datetime.now().strftime("%Y%m%d")
     if isinstance(date_input, datetime):
@@ -230,10 +230,6 @@ def parse_file(file_path):
         except (pd.errors.EmptyDataError, FileNotFoundError, ValueError):
             continue
 
-    # Fallback to custom parsing (this was problematic in original, simplified for CSV focus)
-    # The original custom parsing logic for concatenated records is complex and often error-prone.
-    # It's generally better to ensure the input CSV is well-formed.
-    # For this deployment, we will primarily rely on the CSV output from fetch_mlb_data_internal.
     print(f"Could not parse {file_path} with standard CSV methods. Custom parsing for concatenated records is not robustly supported in this web app.")
     return pd.DataFrame()
 
@@ -457,57 +453,15 @@ def detect_reverse_line_movement(open_odds, consensus_odds, tickets_percent, sid
     consensus_odds = float(consensus_odds)
     tickets_percent = float(tickets_percent)
 
-    # RLM typically means public is on one side, but the line moves against them.
-    # We are fading the 'public_side' (which has more tickets).
-    # So we check the 'fade_side' odds movement.
-    # If the fade_side's odds become LESS favorable (i.e., the *public side* line is moving in their favor,
-    # despite public tickets), then it's RLM.
-    # Or, if fade_side's odds become MORE favorable, but public tickets are significantly higher, it's also RLM.
-
-    # Simpler interpretation of RLM: line moves against the public money/tickets.
-    # Here, 'side' refers to the side being analyzed (e.g., the 'fade_side' from the perspective of public bet).
-    # If the public side (high tickets_percent) is getting worse odds (less favorable), but still has high tickets,
-    # that could indicate RLM.
-    
-    # Original logic: if we are on the 'fade' side and its odds become LESS favorable (move < 0 for American)
-    # This implies the market is moving against the fade side, despite public money on the other side.
-    move = consensus_odds - open_odds
-
-    # If 'side' is 'fade' and the line for the 'fade' side has moved *down* (less favorable),
-    # meaning the public side's line is getting *better* relative to the fade side, despite high public tickets.
-    # Example: Public bets on Team A (-150). Line moves to Team A (-140) (more favorable for public).
-    # This *isn't* RLM. RLM would be public on Team A (-150), line moves to Team A (-160) (less favorable for public).
-    # So if the 'public' side's odds get worse (more negative, or less positive) while having high tickets, that's RLM.
-    # Or, if the 'fade' side's odds get better (more positive, or less negative) while having lower tickets.
-
-    # Let's re-evaluate RLM: A line move *against* the betting public.
-    # This means the public side (higher `tickets_percent`) sees its *odds worsen* (become less favorable),
-    # but the public is still betting heavily on them.
-    # Alternatively, the *fade side* (lower `tickets_percent`) sees its *odds improve* (become more favorable),
-    # even though fewer people are betting on it.
-
-    # Given the existing structure, `tickets_percent` passed is `public_tickets`.
-    # `open_odds` and `consensus_odds` here are for the `fade_side`.
-
-    # Let's assume RLM is when the line for the FADE side becomes MORE FAVORABLE.
-    # Because if the FADE side's odds are improving, but the public is still betting the other way,
-    # it suggests smart money is on the fade side.
-    
     # If the fade side odds are becoming more favorable (e.g., -150 to -140, or +120 to +130)
-    # AND the tickets on the public side are high.
+    # AND the tickets on the public side are high (e.g., > 50%).
     
     # Calculate favorability for the fade side
     fade_favorability = get_favorability(open_odds, consensus_odds)
 
-    # RLM is detected if the 'fade' side (which has lower ticket percentage)
-    # has its odds become 'MORE favorable' (i.e., smart money is coming in),
-    # while the 'public' side still holds the majority of tickets.
     if fade_favorability == "MORE favorable" and tickets_percent > 50: # tickets_percent is for the PUBLIC side
         return True, 'fade_side_became_more_favorable_despite_public_betting', tickets_percent
     
-    # Another scenario for RLM: The 'public' side (high tickets) has its odds become 'LESS favorable'
-    # This would need the public side's odds in this function.
-    # For now, stick to the `fade_side` becoming `MORE favorable` when `public_tickets` are high.
     return False, None, 0.0
 
 
