@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MLB Betting Data Dashboard</title>
-    <!-- Tailwind CSS CDN is NOT needed here as per user's custom CSS preference -->
     <style>
         /* Your provided CSS for styling */
         * {
@@ -54,6 +53,10 @@
             margin-bottom: 30px;
             box-shadow: 0 10px 30px rgba(0,0,0,0.1);
             text-align: center;
+            display: flex; /* Use flex to align button and report link */
+            flex-direction: column; /* Stack them vertically */
+            align-items: center; /* Center horizontally */
+            gap: 15px; /* Space between items */
         }
 
         .fetch-btn {
@@ -69,6 +72,7 @@
             display: inline-flex; /* Use flex for button content */
             align-items: center;
             justify-content: center;
+            min-width: 200px; /* Ensure button doesn't shrink too much */
         }
 
         .fetch-btn:hover {
@@ -300,6 +304,35 @@
             font-size: 0.9rem;
         }
 
+        .report-link-container {
+            margin-top: 15px; /* Space above the report link */
+        }
+
+        .view-report-link {
+            display: inline-block;
+            background-color: #667eea; /* Blueish purple */
+            color: white;
+            padding: 10px 20px;
+            border-radius: 20px;
+            text-decoration: none;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 10px rgba(102, 126, 234, 0.3);
+        }
+
+        .view-report-link:hover {
+            background-color: #5a6cd4;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .view-report-link:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
         @media (max-width: 768px) {
             .games-grid {
                 grid-template-columns: 1fr;
@@ -319,6 +352,17 @@
                 width: 40px;
                 height: 40px;
             }
+            .controls {
+                padding: 15px; /* Adjust padding for smaller screens */
+            }
+            .fetch-btn {
+                padding: 12px 20px;
+                font-size: 1rem;
+            }
+            .view-report-link {
+                padding: 8px 15px;
+                font-size: 0.9rem;
+            }
         }
     </style>
 </head>
@@ -334,7 +378,14 @@
                 <span id="buttonText">Fetch Latest Data</span>
                 <div id="loadingSpinner" class="spinner" style="display: none;"></div>
             </button>
+            
             <div id="status"></div>
+
+            <div id="reportLinkContainer" class="report-link-container" style="display: none;">
+                <a id="viewReportLink" href="#" target="_blank" class="view-report-link">
+                    View Full Line Movement Report
+                </a>
+            </div>
         </div>
 
         <div id="gamesContainer" class="games-grid">
@@ -355,6 +406,8 @@
         const loadingSpinner = document.getElementById('loadingSpinner');
         const statusDiv = document.getElementById('status');
         const gamesContainer = document.getElementById('gamesContainer');
+        const reportLinkContainer = document.getElementById('reportLinkContainer');
+        const viewReportLink = document.getElementById('viewReportLink');
 
         const API_BASE_URL = window.location.origin;
 
@@ -364,6 +417,7 @@
             try {
                 disableButton(true);
                 displayStatus(''); // Clear previous status
+                hideReportLink(); // Hide report link until new one is available
                 gamesContainer.innerHTML = '<div class="no-data"><div class="spinner"></div><p>Fetching MLB betting data... This may take a moment.</p></div>'; // Show inline loading
 
                 const response = await fetch(`${API_BASE_URL}/api/fetch-data`);
@@ -372,6 +426,12 @@
                 if (result.success) {
                     displayStatus(`✅ Data updated successfully at ${new Date().toLocaleString()}`, 'success');
                     displayGames(result.data);
+                    if (result.report_url) {
+                        viewReportLink.href = `${API_BASE_URL}${result.report_url}`;
+                        showReportLink();
+                    } else {
+                        hideReportLink();
+                    }
                 } else {
                     throw new Error(result.error || 'Failed to fetch data from API');
                 }
@@ -379,6 +439,7 @@
                 console.error('Error:', error);
                 displayStatus(`❌ Error: ${error.message}. Please try again.`, 'error');
                 gamesContainer.innerHTML = '<div class="no-data">Failed to load data. Please try again.</div>';
+                hideReportLink();
             } finally {
                 disableButton(false);
             }
@@ -399,6 +460,14 @@
             statusDiv.innerHTML = message ? `<div class="status ${type}">${message}</div>` : '';
         }
 
+        function showReportLink() {
+            reportLinkContainer.style.display = 'block';
+        }
+
+        function hideReportLink() {
+            reportLinkContainer.style.display = 'none';
+        }
+
         function displayGames(games) {
             if (!games || games.length === 0) {
                 gamesContainer.innerHTML = '<div class="no-data">No games found for today.</div>';
@@ -413,13 +482,18 @@
                 .map(([marketType, market]) => createMarketHTML(marketType, market))
                 .join('');
 
+            // Use onError for image fallbacks to placeholder text
+            const awayLogoHtml = game.away_logo ? `<img src="${game.away_logo}" alt="${game.away_team} logo" onerror="this.onerror=null;this.src='https://placehold.co/50x50/cccccc/ffffff?text=${game.away_team.substring(0,3)}';">` : '';
+            const homeLogoHtml = game.home_logo ? `<img src="${game.home_logo}" alt="${game.home_team} logo" onerror="this.onerror=null;this.src='https://placehold.co/50x50/cccccc/ffffff?text=${game.home_team.substring(0,3)}';">` : '';
+
+
             return `
                 <div class="game-card">
                     <div class="matchup">
                         <div class="teams">
-                            ${game.away_logo ? `<img src="${game.away_logo}" alt="${game.away_team} logo" onerror="this.onerror=null;this.src='https://placehold.co/50x50/cccccc/ffffff?text=${game.away_team.substring(0,3)}';">` : ''}
+                            ${awayLogoHtml}
                             ${game.away_team} <span class="vs">@</span> ${game.home_team}
-                            ${game.home_logo ? `<img src="${game.home_logo}" alt="${game.home_team} logo" onerror="this.onerror=null;this.src='https://placehold.co/50x50/cccccc/ffffff?text=${game.home_team.substring(0,3)}';">` : ''}
+                            ${homeLogoHtml}
                         </div>
                     </div>
                     <div class="markets">
