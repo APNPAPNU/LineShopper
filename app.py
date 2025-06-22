@@ -725,6 +725,7 @@ def generate_formatted_report_internal(df, output_path):
 def format_for_frontend(df_raw_filtered):
     """
     Formats the filtered raw data DataFrame into a structured JSON suitable for the frontend.
+    Ensures all numeric types are standard Python int/float for JSON serialization.
     """
     games_output = []
 
@@ -733,7 +734,12 @@ def format_for_frontend(df_raw_filtered):
     numeric_cols_to_check = ['odds', 'value', 'tickets_value', 'tickets_percent', 'money_value', 'money_percent']
     for col in numeric_cols_to_check:
         if col in df_raw_filtered.columns:
-            df_raw_filtered[col] = pd.to_numeric(df_raw_filtered[col], errors='coerce')
+            # Convert to float and then to native Python float/int where appropriate
+            df_raw_filtered[col] = df_raw_filtered[col].apply(lambda x: float(x) if pd.notna(x) else None)
+            # For integer-like columns, convert to int if no decimals and not None
+            if col in ['event_id', 'book_id']: # Add other integer columns if needed
+                 df_raw_filtered[col] = df_raw_filtered[col].apply(lambda x: int(x) if pd.notna(x) and x == int(x) else x)
+
 
     # Group by event (game)
     for event_id, event_data_df in df_raw_filtered.groupby('event_id'):
@@ -771,11 +777,11 @@ def format_for_frontend(df_raw_filtered):
                     consensus_row = None # No data for this side
 
                 if consensus_row is not None:
-                    # Ensure these are numeric, handling NaN gracefully
-                    current_odds = consensus_row['odds'] if pd.notna(consensus_row['odds']) else None
-                    tickets_percent = consensus_row['tickets_percent'] if pd.notna(consensus_row['tickets_percent']) else 0
-                    money_percent = consensus_row['money_percent'] if pd.notna(consensus_row['money_percent']) else 0
-                    line_value = consensus_row['value'] if pd.notna(consensus_row['value']) else None
+                    # Explicitly convert to standard Python types before adding to dict
+                    current_odds = float(consensus_row['odds']) if pd.notna(consensus_row['odds']) else None
+                    tickets_percent = float(consensus_row['tickets_percent']) if pd.notna(consensus_row['tickets_percent']) else 0.0
+                    money_percent = float(consensus_row['money_percent']) if pd.notna(consensus_row['money_percent']) else 0.0
+                    line_value = float(consensus_row['value']) if pd.notna(consensus_row['value']) else None
 
                     market_sides.append({
                         "side": side,
